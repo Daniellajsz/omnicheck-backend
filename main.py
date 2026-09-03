@@ -1,22 +1,21 @@
 import os
 import io
 import asyncio
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Adobe PDF Services SDK (v3.x+)
+# Adobe SDK Imports Limpos
 from adobe.pdfservices.operation.auth.credentials import Credentials
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
-from adobe.pdfservices.operation.io.stream_asset import StreamAsset
-from adobe.pdfservices.operation.pdfjobs.params.html_to_pdf.html_to_pdf_params import HTMLToPDFParams
 from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLToPDFJob
 from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLToPDFResult
 
-# PyPDF2 para unificar os PDFs gerados
+# PyPDF2 para unificação
 from PyPDF2 import PdfMerger
 
 app = FastAPI(title="Omnicheck Backend API")
@@ -46,30 +45,27 @@ def obter_credenciais_adobe():
 
 async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> bytes:
     def _converter():
-        # Inicializa o serviço v3 da Adobe
         pdf_services = PDFServices(credentials=credentials)
         
-        # Como o HTML é via URL, fazemos o download simples dos bytes do HTML
-        import requests
+        # Baixa o conteúdo HTML do Mailchimp
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         html_bytes = resp.content
         
-        # Upload do HTML para os ativos da Adobe
+        # Envia o HTML para a Adobe
         input_asset = pdf_services.upload(
             input_stream=io.BytesIO(html_bytes),
             mime_type=PDFServicesMediaType.HTML
         )
         
-        # Criação e submissão do Job de HTML para PDF
-        params = HTMLToPDFParams.builder().build()
-        job = HTMLToPDFJob(input_asset=input_asset, html_to_pdf_params=params)
+        # Cria o job de conversão sem precisar instanciar Params específicos
+        job = HTMLToPDFJob(input_asset=input_asset)
         
         location = pdf_services.submit(job)
         pdf_services_response = pdf_services.get_job_result(location, HTMLToPDFResult)
         
         result_asset = pdf_services_response.get_result().get_asset()
-        stream_asset: StreamAsset = pdf_services.get_job_output(result_asset)
+        stream_asset = pdf_services.get_job_output(result_asset)
         
         return stream_asset.get_input_stream().read()
 
@@ -92,7 +88,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     pdf_buffers = []
     
     for index, url in enumerate(payload.urls):
-        # Pausa de 2.5s a cada 10 links para garantir respeito ao rate-limit
+        # Pausa a cada 10 links para evitar bloqueio por frequência
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
