@@ -18,7 +18,6 @@ from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLtoPDFJo
 from adobe.pdfservices.operation.pdfjobs.jobs.combine_pdf_job import CombinePDFJob
 from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLtoPDFResult
 from adobe.pdfservices.operation.pdfjobs.result.combine_pdf_result import CombinePDFResult
-from adobe.pdfservices.operation.io.mime_types import MIMEType
 
 app = FastAPI()
 
@@ -76,7 +75,7 @@ async def baixar_e_limpar_html(client: httpx.AsyncClient, url: str) -> str:
 
 def processar_html_adobe(pdf_services: PDFServices, html_content: str):
     stream_bytes = io.BytesIO(html_content.encode("utf-8"))
-    input_asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MIMEType.HTML)
+    input_asset = pdf_services.upload(input_stream=stream_bytes, mime_type="text/html")
     html_to_pdf_job = HTMLtoPDFJob(
         input_asset=input_asset, 
         html_to_pdf_params=HTMLtoPDFParams(include_header_footer=False)
@@ -143,7 +142,7 @@ async def unificar_pdfs_temp(files: List[UploadFile] = File(...)):
         for file in files:
             file_bytes = await file.read()
             stream_bytes = io.BytesIO(file_bytes)
-            asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MIMEType.PDF)
+            asset = pdf_services.upload(input_stream=stream_bytes, mime_type="application/pdf")
             combine_params.add_asset(asset)
 
         combine_job = CombinePDFJob(combine_pdf_params=combine_params)
