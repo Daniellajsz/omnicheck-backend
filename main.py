@@ -8,12 +8,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Standard Imports da Adobe PDF Services SDK v3.x / v4.x
+# Adobe PDF Services SDK v4.x (Estrutura Simplificada)
 from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
-from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLToPDFJob
-from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLToPDFResult
 
 from pypdf import PdfWriter
 
@@ -48,16 +46,14 @@ def converter_uma_url(url: str, pdf_services: PDFServices) -> bytes:
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
 
+    # Upload do HTML em memória
     input_asset = pdf_services.upload(
         input_stream=io.BytesIO(resp.content),
         mime_type=PDFServicesMediaType.HTML
     )
 
-    job = HTMLToPDFJob(input_asset=input_asset)
-    location = pdf_services.submit(job)
-    job_result = pdf_services.get_job_result(location, HTMLToPDFResult)
-
-    result_asset = job_result.get_result().get_asset()
+    # Conversão direta nativa na SDK v4
+    result_asset = pdf_services.html_to_pdf(input_asset=input_asset)
     stream_asset = pdf_services.get_job_output(result_asset)
     
     return stream_asset.get_input_stream().read()
