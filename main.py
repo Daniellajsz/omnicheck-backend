@@ -7,11 +7,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Adobe PDF Services SDK (Imports universais compatíveis)
+# Adobe PDF Services SDK (v3.x+)
 from adobe.pdfservices.operation.auth.credentials import Credentials
-from adobe.pdfservices.operation.pdfops.html_to_pdf_operation import HTMLToPDFOperation
-from adobe.pdfservices.operation.pdfops.options.htmltopdf.html_to_pdf_options import HTMLToPDFOptions
-from adobe.pdfservices.operation.io.file_ref import FileRef
+from adobe.pdfservices.operation.pdf_services import PDFServices
+from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
+from adobe.pdfservices.operation.io.stream_asset import StreamAsset
+from adobe.pdfservices.operation.pdfjobs.params.html_to_pdf.html_to_pdf_params import HTMLToPDFParams
+from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLToPDFJob
+from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLToPDFResult
 
 # PyPDF2 para unificar os PDFs gerados
 from PyPDF2 import PdfMerger
@@ -43,33 +46,32 @@ def obter_credenciais_adobe():
 
 async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> bytes:
     def _converter():
-        # Inicialização genérica compatível com v2 e v3 da SDK
-        try:
-            from adobe.pdfservices.operation.execution_context import ExecutionContext
-            context = ExecutionContext.create(credentials)
-        except ImportError:
-            from adobe.pdfservices.operation.pdf_services import PDFServices
-            context = PDFServices(credentials=credentials)
-
-        html_to_pdf_operation = HTMLToPDFOperation.create()
-        html_to_pdf_options = HTMLToPDFOptions.builder().build()
-        html_to_pdf_operation.set_options(html_to_pdf_options)
+        # Inicializa o serviço v3 da Adobe
+        pdf_services = PDFServices(credentials=credentials)
         
-        input_file_ref = FileRef.create_from_url(url)
-        html_to_pdf_operation.set_input(input_file_ref)
+        # Como o HTML é via URL, fazemos o download simples dos bytes do HTML
+        import requests
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        html_bytes = resp.content
         
-        result_file_ref = html_to_pdf_operation.execute(context)
+        # Upload do HTML para os ativos da Adobe
+        input_asset = pdf_services.upload(
+            input_stream=io.BytesIO(html_bytes),
+            mime_type=PDFServicesMediaType.HTML
+        )
         
-        temp_path = f"/tmp/temp_{os.urandom(8).hex()}.pdf"
-        result_file_ref.save_as(temp_path)
+        # Criação e submissão do Job de HTML para PDF
+        params = HTMLToPDFParams.builder().build()
+        job = HTMLToPDFJob(input_asset=input_asset, html_to_pdf_params=params)
         
-        with open(temp_path, "rb") as f:
-            pdf_bytes = f.read()
-            
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-            
-        return pdf_bytes
+        location = pdf_services.submit(job)
+        pdf_services_response = pdf_services.get_job_result(location, HTMLToPDFResult)
+        
+        result_asset = pdf_services_response.get_result().get_asset()
+        stream_asset: StreamAsset = pdf_services.get_job_output(result_asset)
+        
+        return stream_asset.get_input_stream().read()
 
     return await asyncio.to_thread(_converter)
 
@@ -90,7 +92,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     pdf_buffers = []
     
     for index, url in enumerate(payload.urls):
-        # Pausa a cada 10 links para evitar bloqueio por frequência na Adobe
+        # Pausa de 2.5s a cada 10 links para garantir respeito ao rate-limit
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
@@ -104,7 +106,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not pdf_buffers:
         raise HTTPException(
             status_code=500, 
-            detail="Não foi possível converter nenhuma das URLs fornecidas."
+            detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
         )
 
     merger = PdfMerger()
