@@ -1,16 +1,14 @@
 import os
 import io
 import asyncio
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Adobe PDF Services SDK
+# Adobe PDF Services SDK (Imports universais compatíveis)
 from adobe.pdfservices.operation.auth.credentials import Credentials
-from adobe.pdfservices.operation.execution_context import ExecutionContext
 from adobe.pdfservices.operation.pdfops.html_to_pdf_operation import HTMLToPDFOperation
 from adobe.pdfservices.operation.pdfops.options.htmltopdf.html_to_pdf_options import HTMLToPDFOptions
 from adobe.pdfservices.operation.io.file_ref import FileRef
@@ -20,10 +18,9 @@ from PyPDF2 import PdfMerger
 
 app = FastAPI(title="Omnicheck Backend API")
 
-# Configuração de CORS para permitir requisições do Cloudflare Pages
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, você pode restringir para o seu domínio do Cloudflare
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,23 +42,24 @@ def obter_credenciais_adobe():
         .build()
 
 async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> bytes:
-    # Executa a chamada síncrona da SDK da Adobe em uma thread separada para não travar o loop de eventos
     def _converter():
-        execution_context = ExecutionContext.create(credentials)
+        # Inicialização genérica compatível com v2 e v3 da SDK
+        try:
+            from adobe.pdfservices.operation.execution_context import ExecutionContext
+            context = ExecutionContext.create(credentials)
+        except ImportError:
+            from adobe.pdfservices.operation.pdf_services import PDFServices
+            context = PDFServices(credentials=credentials)
+
         html_to_pdf_operation = HTMLToPDFOperation.create()
-        
-        # Configura as opções do HTML para PDF
         html_to_pdf_options = HTMLToPDFOptions.builder().build()
         html_to_pdf_operation.set_options(html_to_pdf_options)
         
-        # Define a URL de entrada
         input_file_ref = FileRef.create_from_url(url)
         html_to_pdf_operation.set_input(input_file_ref)
         
-        # Executa a operação
-        result_file_ref = html_to_pdf_operation.execute(execution_context)
+        result_file_ref = html_to_pdf_operation.execute(context)
         
-        # Salva temporariamente em memória e retorna os bytes
         temp_path = f"/tmp/temp_{os.urandom(8).hex()}.pdf"
         result_file_ref.save_as(temp_path)
         
@@ -92,7 +90,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     pdf_buffers = []
     
     for index, url in enumerate(payload.urls):
-        # A cada 10 links, faz uma pausa de 2.5 segundos para não estourar o limite de chamadas/minuto da Adobe
+        # Pausa a cada 10 links para evitar bloqueio por frequência na Adobe
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
@@ -100,16 +98,15 @@ async def gerar_pdf_adobe(payload: PDFRequest):
             pdf_bytes = await converter_url_para_pdf_bytes(url, credentials)
             pdf_buffers.append(io.BytesIO(pdf_bytes))
         except Exception as e:
-            print(f"[Aviso] Falha ao converter a URL ({url}): {str(e)}")
-            continue  # Se um link específico falhar, ele ignora e continua os demais
+            print(f"[Aviso] Falha ao converter URL ({url}): {str(e)}")
+            continue
 
     if not pdf_buffers:
         raise HTTPException(
             status_code=500, 
-            detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
+            detail="Não foi possível converter nenhuma das URLs fornecidas."
         )
 
-    # Unifica todos os PDFs gerados em um único arquivo
     merger = PdfMerger()
     for buf in pdf_buffers:
         buf.seek(0)
@@ -120,7 +117,6 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     merger.close()
     output_stream.seek(0)
 
-    # Retorna o PDF compilado via Streaming
     return StreamingResponse(
         output_stream,
         media_type="application/pdf",
