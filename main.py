@@ -8,10 +8,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Adobe PDF Services SDK - Importação Híbrida (Compatível com v2 e v3)
+# Adobe PDF Services SDK - Importação Híbrida
 from adobe.pdfservices.operation.auth.credentials import Credentials
 
-# Tenta carregar a v2 ou v3 dinamicamente sem quebrar a inicialização
 IS_V3 = False
 try:
     from adobe.pdfservices.operation.pdf_services import PDFServices
@@ -22,8 +21,8 @@ except ImportError:
     from adobe.pdfservices.operation.pdfops.options.htmltopdf.html_to_pdf_options import HTMLToPDFOptions
     from adobe.pdfservices.operation.io.file_ref import FileRef
 
-# PyPDF2 para unificação
-from PyPDF2 import PdfMerger
+# Biblioteca pypdf atualizada
+from pypdf import PdfWriter
 
 app = FastAPI(title="Omnicheck Backend API")
 
@@ -53,7 +52,6 @@ def obter_credenciais_adobe():
 async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> bytes:
     def _converter():
         if IS_V3:
-            # Lógica para SDK v3
             from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
             pdf_services = PDFServices(credentials=credentials)
             
@@ -65,7 +63,6 @@ async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> by
                 mime_type=PDFServicesMediaType.HTML
             )
             
-            # Import dinâmico da Job v3
             from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLToPDFJob
             job = HTMLToPDFJob(input_asset=input_asset)
             
@@ -77,7 +74,6 @@ async def converter_url_para_pdf_bytes(url: str, credentials: Credentials) -> by
             stream_asset = pdf_services.get_job_output(result_asset)
             return stream_asset.get_input_stream().read()
         else:
-            # Lógica para SDK v2 (Legada e estável)
             execution_context = ExecutionContext.create(credentials)
             html_to_pdf_operation = HTMLToPDFOperation.create()
             html_options = HTMLToPDFOptions.builder().build()
@@ -118,7 +114,6 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     pdf_buffers = []
     
     for index, url in enumerate(payload.urls):
-        # Pausa de 2.5s a cada 10 links para evitar bloqueio por frequência
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
@@ -135,14 +130,14 @@ async def gerar_pdf_adobe(payload: PDFRequest):
             detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
         )
 
-    merger = PdfMerger()
+    writer = PdfWriter()
     for buf in pdf_buffers:
         buf.seek(0)
-        merger.append(buf)
+        writer.append(buf)
 
     output_stream = io.BytesIO()
-    merger.write(output_stream)
-    merger.close()
+    writer.write(output_stream)
+    writer.close()
     output_stream.seek(0)
 
     return StreamingResponse(
