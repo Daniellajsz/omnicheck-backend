@@ -18,7 +18,7 @@ from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLtoPDFJo
 from adobe.pdfservices.operation.pdfjobs.jobs.combine_pdf_job import CombinePDFJob
 from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLtoPDFResult
 from adobe.pdfservices.operation.pdfjobs.result.combine_pdf_result import CombinePDFResult
-from adobe.pdfservices.operation.io.mime_type import MimeType
+from adobe.pdfservices.operation.io.mime_types import MIMEType
 
 app = FastAPI()
 
@@ -76,7 +76,7 @@ async def baixar_e_limpar_html(client: httpx.AsyncClient, url: str) -> str:
 
 def processar_html_adobe(pdf_services: PDFServices, html_content: str):
     stream_bytes = io.BytesIO(html_content.encode("utf-8"))
-    input_asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MimeType.HTML)
+    input_asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MIMEType.HTML)
     html_to_pdf_job = HTMLtoPDFJob(
         input_asset=input_asset, 
         html_to_pdf_params=HTMLtoPDFParams(include_header_footer=False)
@@ -92,7 +92,7 @@ async def converter_com_semaforo_seguro(pdf_services: PDFServices, html: str, ur
             return await asyncio.to_thread(processar_html_adobe, pdf_services, html)
         except Exception:
             html_seguro = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family: Arial, sans-serif; padding: 30px;"><div style="border: 2px solid #e74c3c; padding: 20px; border-radius: 8px; background: #fff5f5;"><h3 style="color: #c0392b; margin-top:0;">Matéria Indisponível para Conversão Direta</h3><p>O conteúdo do link abaixo não pôde ser renderizado automaticamente pela API da Adobe:</p><p><a href="{url}" target="_blank">{url}</a></p></div></body></html>"""
-            return await asyncio.to_thread(processar_html_adobe, pdf_services, html_seguro)
+            return await asyncio.sleep(0.5) or await asyncio.to_thread(processar_html_adobe, pdf_services, html_seguro)
 
 @app.post("/gerar-pdf-adobe")
 async def gerar_pdf_adobe(payload: AdobePDFRequest):
@@ -143,7 +143,7 @@ async def unificar_pdfs_temp(files: List[UploadFile] = File(...)):
         for file in files:
             file_bytes = await file.read()
             stream_bytes = io.BytesIO(file_bytes)
-            asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MimeType.PDF)
+            asset = pdf_services.upload(input_stream=stream_bytes, mime_type=MIMEType.PDF)
             combine_params.add_asset(asset)
 
         combine_job = CombinePDFJob(combine_pdf_params=combine_params)
