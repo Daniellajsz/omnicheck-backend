@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Importações oficiais da SDK v4.x da Adobe (Nomes exatos das classes)
+# Importações oficiais da SDK v4.x da Adobe (Grafia exata)
 from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
@@ -45,22 +45,21 @@ def obter_pdf_services():
     return PDFServices(credentials=credentials)
 
 def converter_uma_url(url: str, pdf_services: PDFServices) -> bytes:
-    # 1. Faz o download do HTML da URL do Mailchimp
+    # 1. Faz o download do HTML do Mailchimp
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
 
-    # 2. Upload do conteúdo HTML para a Adobe
+    # 2. Upload do HTML para a Adobe
     input_asset = pdf_services.upload(
         input_stream=io.BytesIO(resp.content),
         mime_type=PDFServicesMediaType.HTML
     )
 
-    # 3. Cria parâmetros e Job com o padrão oficial da biblioteca (HTMLtoPDFParams / HTMLtoPDFJob)
+    # 3. Executa o job com HTMLtoPDFParams
     html_to_pdf_params = HTMLtoPDFParams()
     html_to_pdf_job = HTMLtoPDFJob(input_asset=input_asset, html_to_pdf_params=html_to_pdf_params)
 
-    # 4. Envia o job e aguarda o retorno
     location = pdf_services.submit(html_to_pdf_job)
     pdf_services_response = pdf_services.get_job_result(location, HTMLtoPDFResult)
 
@@ -85,9 +84,8 @@ async def gerar_pdf_adobe(payload: PDFRequest):
 
     pdf_buffers = []
 
-    # Processa os links com tratamento em lote
     for index, url in enumerate(payload.urls):
-        # Pausa a cada 10 links para respeitar o limite de taxa de requisições por minuto da Adobe
+        # Pausa a cada 10 links para evitar estourar o limite de taxa da Adobe
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
@@ -104,7 +102,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
             detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
         )
 
-    # Unifica todos os PDFs baixados usando a biblioteca pypdf
+    # Unifica todos os PDFs em um único arquivo
     writer = PdfWriter()
     for pdf_bytes in pdf_buffers:
         buf = io.BytesIO(pdf_bytes)
