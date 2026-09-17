@@ -2,5 +2,5 @@ fastapi
 uvicorn
 httpx
 pypdf
+playwright
 pydantic
-pdfservices-sdk
