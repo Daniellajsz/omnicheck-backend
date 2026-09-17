@@ -6,7 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
-from xhtml2pdf import pisa
+from bs4 import BeautifulSoup
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from pypdf import PdfWriter
 
 app = FastAPI(title="Omnicheck Backend API")
@@ -22,12 +25,37 @@ app.add_middleware(
 class PDFRequest(BaseModel):
     urls: List[str]
 
+def extrair_texto_html(html_content: str) -> str:
+    soup = BeautifulSoup(html_content, "html.parser")
+    for script in soup(["script", "style"]):
+        script.decompose()
+    return soup.get_text(separator="\n")
+
 def html_para_pdf_bytes(html_content: str) -> bytes:
-    pdf_buffer = io.BytesIO()
-    pisa_status = pisa.CreatePDF(html_content, dest=pdf_buffer)
-    if pisa_status.err:
-        raise Exception("Erro ao converter HTML para PDF localmente.")
-    return pdf_buffer.getvalue()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    
+    estilo_corpo = ParagraphStyle(
+        'CorpoEmail',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        spaceAfter=8
+    )
+
+    texto_limpo = extrair_texto_html(html_content)
+    story = []
+
+    for linha in texto_limpo.split("\n"):
+        linha_limpa = linha.strip()
+        if linha_limpa:
+            linha_formatada = linha_limpa.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            story.append(Paragraph(linha_formatada, estilo_corpo))
+            story.append(Spacer(1, 4))
+
+    doc.build(story)
+    return buffer.getvalue()
 
 async def converter_url_local(url: str, client: httpx.AsyncClient) -> bytes:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
