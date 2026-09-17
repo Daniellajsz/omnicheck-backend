@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-requests
 httpx
 pypdf
-pdfservices-sdk
+xhtml2pdf
 pydantic
