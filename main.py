@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
 
-# Importações oficiais da SDK v4.x da Adobe (Grafia exata)
+# SDK v4.x da Adobe
 from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
@@ -32,11 +32,20 @@ class PDFRequest(BaseModel):
     urls: List[str]
 
 def obter_pdf_services():
-    client_id = os.getenv("PDF_SERVICES_CLIENT_ID")
-    client_secret = os.getenv("PDF_SERVICES_CLIENT_SECRET")
+    # Aceita tanto a nomenclatura PDF_SERVICES quanto ADOBE_CLIENT com fallback para as chaves novas
+    client_id = (
+        os.getenv("PDF_SERVICES_CLIENT_ID") 
+        or os.getenv("ADOBE_CLIENT_ID") 
+        or "aee1a4561ffb4c28b98a70ee1153eeee"
+    )
+    client_secret = (
+        os.getenv("PDF_SERVICES_CLIENT_SECRET") 
+        or os.getenv("ADOBE_CLIENT_SECRET") 
+        or "p8e-bqN7olG7P9izc8hzBf9Uh7N9gJVGLSVW"
+    )
     
     if not client_id or not client_secret:
-        raise ValueError("Credenciais da Adobe não configuradas nas variáveis de ambiente.")
+        raise ValueError("Credenciais da Adobe não encontradas nas variáveis de ambiente.")
         
     credentials = ServicePrincipalCredentials(
         client_id=client_id,
@@ -45,18 +54,15 @@ def obter_pdf_services():
     return PDFServices(credentials=credentials)
 
 def converter_uma_url(url: str, pdf_services: PDFServices) -> bytes:
-    # 1. Faz o download do HTML do Mailchimp
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
 
-    # 2. Upload do HTML para a Adobe
     input_asset = pdf_services.upload(
         input_stream=io.BytesIO(resp.content),
         mime_type=PDFServicesMediaType.HTML
     )
 
-    # 3. Executa o job com HTMLtoPDFParams
     html_to_pdf_params = HTMLtoPDFParams()
     html_to_pdf_job = HTMLtoPDFJob(input_asset=input_asset, html_to_pdf_params=html_to_pdf_params)
 
@@ -72,7 +78,11 @@ def converter_uma_url(url: str, pdf_services: PDFServices) -> bytes:
 def home():
     return {"status": "ok", "message": "Omnicheck Backend está ativo"}
 
+# Múltiplos decoradores para aceitar chamadas com ou sem /api
 @app.post("/gerar-pdf-adobe")
+@app.post("/gerar-pdf-adobe/")
+@app.post("/api/gerar-pdf-adobe")
+@app.post("/api/gerar-pdf-adobe/")
 async def gerar_pdf_adobe(payload: PDFRequest):
     if not payload.urls:
         raise HTTPException(status_code=400, detail="A lista de URLs não pode estar vazia.")
@@ -80,12 +90,12 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     try:
         pdf_services = obter_pdf_services()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao conectar com a Adobe: {str(e)}")
+        print(f"❌ Erro nas credenciais: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro de autenticação com a Adobe: {str(e)}")
 
     pdf_buffers = []
 
     for index, url in enumerate(payload.urls):
-        # Pausa a cada 10 links para evitar estourar o limite de taxa da Adobe
         if index > 0 and index % 10 == 0:
             await asyncio.sleep(2.5)
 
@@ -99,10 +109,9 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not pdf_buffers:
         raise HTTPException(
             status_code=500, 
-            detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
+            detail="Não foi possível converter nenhuma das URLs em PDF. Verifique os logs do servidor."
         )
 
-    # Unifica todos os PDFs em um único arquivo
     writer = PdfWriter()
     for pdf_bytes in pdf_buffers:
         buf = io.BytesIO(pdf_bytes)
