@@ -1,7 +1,7 @@
 fastapi
 uvicorn
-httpx
 requests
-pydantic
-pdfservices-sdk
+httpx
 pypdf
+adobe-pdfservices-sdk==4.3.0
+pydantic
