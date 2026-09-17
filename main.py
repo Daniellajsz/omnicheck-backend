@@ -1,20 +1,11 @@
-import os
 import io
 import asyncio
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
-
-from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
-from adobe.pdfservices.operation.pdf_services import PDFServices
-from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
-from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLtoPDFJob
-from adobe.pdfservices.operation.pdfjobs.params.html_to_pdf.html_to_pdf_params import HTMLtoPDFParams
-from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLtoPDFResult
-
+from playwright.async_api import async_playwright
 from pypdf import PdfWriter
 
 app = FastAPI(title="Omnicheck Backend API")
@@ -30,29 +21,23 @@ app.add_middleware(
 class PDFRequest(BaseModel):
     urls: List[str]
 
-def obter_pdf_services():
-    client_id = os.getenv("ADOBE_CLIENT_ID") or os.getenv("PDF_SERVICES_CLIENT_ID") or "aee1a4561ffb4c28b98a70ee1153eeee"
-    client_secret = os.getenv("ADOBE_CLIENT_SECRET") or os.getenv("PDF_SERVICES_CLIENT_SECRET") or "p8e-bqN7olG7P9izc8hzBf9Uh7N9gJVGLSVW"
-    
-    credentials = ServicePrincipalCredentials(client_id=client_id, client_secret=client_secret)
-    return PDFServices(credentials=credentials)
-
-def processar_adobe_sync(html_bytes: bytes, pdf_services: PDFServices) -> bytes:
-    input_asset = pdf_services.upload(
-        input_stream=io.BytesIO(html_bytes),
-        mime_type=PDFServicesMediaType.HTML
-    )
-    html_to_pdf_params = HTMLtoPDFParams()
-    html_to_pdf_job = HTMLtoPDFJob(input_asset=input_asset, html_to_pdf_params=html_to_pdf_params)
-    location = pdf_services.submit(html_to_pdf_job)
-    pdf_services_response = pdf_services.get_job_result(location, HTMLtoPDFResult)
-    result_asset = pdf_services_response.get_result().get_asset()
-    stream_asset = pdf_services.get_content(result_asset)
-    return stream_asset.get_input_stream().read()
+async def converter_url_com_playwright(url: str, browser) -> bytes:
+    page = await browser.new_page()
+    try:
+        # Carrega a página do Mailchimp até renderizar todo o CSS/Imagens
+        await page.goto(url, wait_until="networkidle", timeout=15000)
+        pdf_bytes = await page.pdf(
+            format="A4",
+            print_background=True,
+            margin={"top": "10mm", "bottom": "10mm", "left": "10mm", "right": "10mm"}
+        )
+        return pdf_bytes
+    finally:
+        await page.close()
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "Omnicheck Backend Ativo"}
+    return {"status": "ok", "message": "Backend Omnicheck Playwright ativo"}
 
 @app.post("/gerar-pdf-adobe")
 @app.post("/gerar-pdf-adobe/")
@@ -62,16 +47,37 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not payload.urls:
         raise HTTPException(status_code=400, detail="Nenhuma URL informada.")
 
-    url = payload.urls[0]
-    pdf_services = obter_pdf_services()
+    pdf_buffers = []
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
-        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-        resp.raise_for_status()
-        pdf_bytes = await asyncio.to_thread(processar_adobe_sync, resp.content, pdf_services)
+    async with async_playwright() as p:
+        # Inicia o naveador Chromium em modo headless
+        browser = await p.chromium.launch(headless=True)
+        
+        for url in payload.urls:
+            try:
+                pdf_bytes = await converter_url_com_playwright(url, browser)
+                pdf_buffers.append(pdf_bytes)
+            except Exception as e:
+                print(f"[Erro ao converter] {url}: {str(e)}")
+                continue
+                
+        await browser.close()
+
+    if not pdf_buffers:
+        raise HTTPException(status_code=500, detail="Não foi possível converter os links em PDF.")
+
+    # Unifica todos os PDFs em um só
+    writer = PdfWriter()
+    for pdf_bytes in pdf_buffers:
+        writer.append(io.BytesIO(pdf_bytes))
+
+    output_stream = io.BytesIO()
+    writer.write(output_stream)
+    writer.close()
+    output_stream.seek(0)
 
     return StreamingResponse(
-        io.BytesIO(pdf_bytes),
+        output_stream,
         media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=boletim.pdf"}
+        headers={"Content-Disposition": "attachment; filename=Boletins_Mailchimp.pdf"}
     )
