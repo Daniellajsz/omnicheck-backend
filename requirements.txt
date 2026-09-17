@@ -2,5 +2,6 @@ fastapi
 uvicorn
 httpx
 pypdf
-xhtml2pdf
+beautifulsoup4
+reportlab
 pydantic
