@@ -7,10 +7,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
+
+# SDK Oficial da Adobe
+from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
+from adobe.pdfservices.operation.pdf_services import PDFServices
+from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
+from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLtoPDFJob
+from adobe.pdfservices.operation.pdfjobs.params.html_to_pdf.html_to_pdf_params import HTMLtoPDFParams
+from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLtoPDFResult
+
 from pypdf import PdfWriter
 
 app = FastAPI(title="Omnicheck Backend API")
 
+# Habilita suporte a requisições CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,82 +32,53 @@ app.add_middleware(
 class PDFRequest(BaseModel):
     urls: List[str]
 
-# Obter Token JWT/OAuth direto da Adobe
-async def obter_access_token(client: httpx.AsyncClient) -> str:
-    client_id = os.getenv("ADOBE_CLIENT_ID") or os.getenv("PDF_SERVICES_CLIENT_ID") or "aee1a4561ffb4c28b98a70ee1153eeee"
-    client_secret = os.getenv("ADOBE_CLIENT_SECRET") or os.getenv("PDF_SERVICES_CLIENT_SECRET") or "p8e-bqN7olG7P9izc8hzBf9Uh7N9gJVGLSVW"
-
-    url = "https://pdf-services.adobe.io/token"
-    data = {
-        "client_id": client_id,
-        "client_secret": client_secret
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    resp = await client.post(url, data=data, headers=headers)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Falha ao autenticar na Adobe: {resp.text}")
-    return resp.json()["access_token"]
-
-# Processar conversão HTML -> PDF direto pela API REST da Adobe
-async def converter_url_adobe_direct(url: str, access_token: str, client_id: str, client: httpx.AsyncClient) -> bytes:
-    # 1. Download do HTML do Mailchimp
-    resp_mailchimp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10.0)
-    resp_mailchimp.raise_for_status()
-
-    headers_adobe = {
-        "Authorization": f"Bearer {access_token}",
-        "x-api-key": client_id,
-        "Content-Type": "application/json"
-    }
-
-    # 2. Solicitar upload do Asset para a Adobe
-    upload_req = await client.post(
-        "https://pdf-services.adobe.io/assets",
-        json={"mediaType": "text/html"},
-        headers=headers_adobe
+def obter_pdf_services():
+    client_id = (
+        os.getenv("ADOBE_CLIENT_ID") 
+        or os.getenv("PDF_SERVICES_CLIENT_ID") 
+        or "aee1a4561ffb4c28b98a70ee1153eeee"
     )
-    upload_req.raise_for_status()
-    upload_data = upload_req.json()
-
-    upload_url = upload_data["uploadUri"]
-    asset_id = upload_data["assetID"]
-
-    # 3. Enviar o HTML para o Storage da Adobe
-    await client.put(upload_url, content=resp_mailchimp.content, headers={"Content-Type": "text/html"})
-
-    # 4. Iniciar Job de conversão HTML to PDF
-    job_payload = {
-        "assetID": asset_id,
-        "json": "{}",
-        "pageLayout": {"pageWidth": 8.5, "pageHeight": 11}
-    }
-    job_req = await client.post(
-        "https://pdf-services.adobe.io/operation/htmltopdf",
-        json=job_payload,
-        headers=headers_adobe
+    client_secret = (
+        os.getenv("ADOBE_CLIENT_SECRET") 
+        or os.getenv("PDF_SERVICES_CLIENT_SECRET") 
+        or "p8e-bqN7olG7P9izc8hzBf9Uh7N9gJVGLSVW"
     )
-    job_req.raise_for_status()
-    status_url = job_req.headers["location"]
+    
+    if not client_id or not client_secret:
+        raise ValueError("Credenciais da Adobe não configuradas.")
+        
+    credentials = ServicePrincipalCredentials(
+        client_id=client_id,
+        client_secret=client_secret
+    )
+    return PDFServices(credentials=credentials)
 
-    # 5. Poll do resultado (máximo 15 segundos)
-    for _ in range(15):
-        await asyncio.sleep(1.0)
-        status_req = await client.get(status_url, headers=headers_adobe)
-        status_data = status_req.json()
+def executar_conversao_adobe_sync(html_bytes: bytes, pdf_services: PDFServices) -> bytes:
+    input_asset = pdf_services.upload(
+        input_stream=io.BytesIO(html_bytes),
+        mime_type=PDFServicesMediaType.HTML
+    )
 
-        if status_data.get("status") == "done":
-            download_url = status_data["asset"]["downloadUri"]
-            download_req = await client.get(download_url)
-            return download_req.content
-        elif status_data.get("status") == "failed":
-            raise Exception("A conversão falhou no servidor da Adobe.")
+    html_to_pdf_params = HTMLtoPDFParams()
+    html_to_pdf_job = HTMLtoPDFJob(input_asset=input_asset, html_to_pdf_params=html_to_pdf_params)
 
-    raise Exception("Timeout ao aguardar resposta da Adobe.")
+    location = pdf_services.submit(html_to_pdf_job)
+    pdf_services_response = pdf_services.get_job_result(location, HTMLtoPDFResult)
+
+    result_asset = pdf_services_response.get_result().get_asset()
+    stream_asset = pdf_services.get_content(result_asset)
+    return stream_asset.get_input_stream().read()
+
+async def converter_url_adobe(url: str, pdf_services: PDFServices, client: httpx.AsyncClient) -> bytes:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    resp = await client.get(url, headers=headers, timeout=12.0)
+    resp.raise_for_status()
+    
+    return await asyncio.to_thread(executar_conversao_adobe_sync, resp.content, pdf_services)
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "Backend Omnicheck Adobe Direct ativo"}
+    return {"status": "ok", "message": "Backend Omnicheck está ativo"}
 
 @app.post("/gerar-pdf-adobe")
 @app.post("/gerar-pdf-adobe/")
@@ -107,27 +88,33 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not payload.urls:
         raise HTTPException(status_code=400, detail="A lista de URLs não pode estar vazia.")
 
-    client_id = os.getenv("ADOBE_CLIENT_ID") or os.getenv("PDF_SERVICES_CLIENT_ID") or "aee1a4561ffb4c28b98a70ee1153eeee"
+    try:
+        pdf_services = obter_pdf_services()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro de autenticação Adobe: {str(e)}")
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        access_token = await obter_access_token(client)
-        semaphore = asyncio.Semaphore(5)
+    # Semáforo limitado a 2 conversões paralelas para evitar timeout no Render
+    semaphore = asyncio.Semaphore(2)
 
-        async def processar_com_semaforo(url: str):
-            async with semaphore:
-                try:
-                    return await converter_url_adobe_direct(url, access_token, client_id, client)
-                except Exception as e:
-                    print(f"[Erro Adobe] {url}: {str(e)}")
-                    return None
+    async def processar_com_semaforo(url: str, client: httpx.AsyncClient):
+        async with semaphore:
+            try:
+                return await converter_url_adobe(url, pdf_services, client)
+            except Exception as e:
+                print(f"[Aviso] Falha ao converter URL ({url}): {str(e)}")
+                return None
 
-        tasks = [processar_com_semaforo(url) for url in payload.urls]
+    async with httpx.AsyncClient(follow_redirects=True, timeout=25.0) as client:
+        tasks = [processar_com_semaforo(url, client) for url in payload.urls]
         resultados = await asyncio.gather(*tasks)
 
     pdf_buffers = [res for res in resultados if res is not None]
 
     if not pdf_buffers:
-        raise HTTPException(status_code=500, detail="Não foi possível converter as URLs via Adobe.")
+        raise HTTPException(
+            status_code=500, 
+            detail="Não foi possível converter as URLs em PDF através da API da Adobe."
+        )
 
     writer = PdfWriter()
     for pdf_bytes in pdf_buffers:
