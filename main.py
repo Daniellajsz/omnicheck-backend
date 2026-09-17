@@ -90,28 +90,33 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     try:
         pdf_services = obter_pdf_services()
     except Exception as e:
-        print(f"❌ Erro nas credenciais: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro de autenticação com a Adobe: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro nas credenciais: {str(e)}")
 
-    pdf_buffers = []
+    # Limita o número de tarefas paralelas para não sobrecarregar a Adobe
+    semaphore = asyncio.Semaphore(5)
 
-    for index, url in enumerate(payload.urls):
-        if index > 0 and index % 10 == 0:
-            await asyncio.sleep(2.5)
+    async def converter_com_semaforo(url: str, client: httpx.AsyncClient):
+        async with semaphore:
+            try:
+                return await converter_uma_url_async(url, pdf_services, client)
+            except Exception as e:
+                print(f"[Aviso] Falha ao converter URL ({url}): {str(e)}")
+                return None
 
-        try:
-            pdf_bytes = await asyncio.to_thread(converter_uma_url, url, pdf_services)
-            pdf_buffers.append(pdf_bytes)
-        except Exception as e:
-            print(f"[Aviso] Falha ao converter URL ({url}): {str(e)}")
-            continue
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        tasks = [converter_com_semaforo(url, client) for url in payload.urls]
+        resultados = await asyncio.gather(*tasks)
+
+    # Filtra apenas os PDFs convertidos com sucesso
+    pdf_buffers = [res for res in resultados if res is not None]
 
     if not pdf_buffers:
         raise HTTPException(
             status_code=500, 
-            detail="Não foi possível converter nenhuma das URLs em PDF. Verifique os logs do servidor."
+            detail="Não foi possível converter nenhuma das URLs fornecidas em PDF."
         )
 
+    # Unifica todos os PDFs via pypdf
     writer = PdfWriter()
     for pdf_bytes in pdf_buffers:
         buf = io.BytesIO(pdf_bytes)
@@ -126,4 +131,3 @@ async def gerar_pdf_adobe(payload: PDFRequest):
         output_stream,
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=Boletins_Mailchimp_Adobe.pdf"}
-    )
