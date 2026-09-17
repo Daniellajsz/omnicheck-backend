@@ -1,3 +1,4 @@
+import os
 import io
 import asyncio
 import httpx
@@ -6,10 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List
-from bs4 import BeautifulSoup
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+# SDK oficial da Adobe
+from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
+from adobe.pdfservices.operation.pdf_services import PDFServices
+from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
+from adobe.pdfservices.operation.pdfjobs.jobs.html_to_pdf_job import HTMLtoPDFJob
+from adobe.pdfservices.operation.pdfjobs.params.html_to_pdf.html_to_pdf_params import HTMLtoPDFParams
+from adobe.pdfservices.operation.pdfjobs.result.html_to_pdf_result import HTMLtoPDFResult
+
 from pypdf import PdfWriter
 
 app = FastAPI(title="Omnicheck Backend API")
@@ -25,48 +31,54 @@ app.add_middleware(
 class PDFRequest(BaseModel):
     urls: List[str]
 
-def extrair_texto_html(html_content: str) -> str:
-    soup = BeautifulSoup(html_content, "html.parser")
-    for script in soup(["script", "style"]):
-        script.decompose()
-    return soup.get_text(separator="\n")
-
-def html_para_pdf_bytes(html_content: str) -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    styles = getSampleStyleSheet()
+def obter_pdf_services():
+    client_id = (
+        os.getenv("ADOBE_CLIENT_ID") 
+        or os.getenv("PDF_SERVICES_CLIENT_ID") 
+        or "aee1a4561ffb4c28b98a70ee1153eeee"
+    )
+    client_secret = (
+        os.getenv("ADOBE_CLIENT_SECRET") 
+        or os.getenv("PDF_SERVICES_CLIENT_SECRET") 
+        or "p8e-bqN7olG7P9izc8hzBf9Uh7N9gJVGLSVW"
+    )
     
-    estilo_corpo = ParagraphStyle(
-        'CorpoEmail',
-        parent=styles['Normal'],
-        fontSize=10,
-        leading=14,
-        spaceAfter=8
+    if not client_id or not client_secret:
+        raise ValueError("Credenciais da Adobe não configuradas nas variáveis de ambiente.")
+        
+    credentials = ServicePrincipalCredentials(
+        client_id=client_id,
+        client_secret=client_secret
+    )
+    return PDFServices(credentials=credentials)
+
+def processar_conversao_adobe(html_bytes: bytes, pdf_services: PDFServices) -> bytes:
+    input_asset = pdf_services.upload(
+        input_stream=io.BytesIO(html_bytes),
+        mime_type=PDFServicesMediaType.HTML
     )
 
-    texto_limpo = extrair_texto_html(html_content)
-    story = []
+    html_to_pdf_params = HTMLtoPDFParams()
+    html_to_pdf_job = HTMLtoPDFJob(input_asset=input_asset, html_to_pdf_params=html_to_pdf_params)
 
-    for linha in texto_limpo.split("\n"):
-        linha_limpa = linha.strip()
-        if linha_limpa:
-            linha_formatada = linha_limpa.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            story.append(Paragraph(linha_formatada, estilo_corpo))
-            story.append(Spacer(1, 4))
+    location = pdf_services.submit(html_to_pdf_job)
+    pdf_services_response = pdf_services.get_job_result(location, HTMLtoPDFResult)
 
-    doc.build(story)
-    return buffer.getvalue()
+    result_asset = pdf_services_response.get_result().get_asset()
+    stream_asset = pdf_services.get_content(result_asset)
+    return stream_asset.get_input_stream().read()
 
-async def converter_url_local(url: str, client: httpx.AsyncClient) -> bytes:
+async def converter_url_adobe(url: str, pdf_services: PDFServices, client: httpx.AsyncClient) -> bytes:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    resp = await client.get(url, headers=headers, timeout=10.0)
+    resp = await client.get(url, headers=headers, timeout=15.0)
     resp.raise_for_status()
     
-    return await asyncio.to_thread(html_para_pdf_bytes, resp.text)
+    # Roda o SDK síncrono da Adobe isolado em uma thread para não travar o evento principal
+    return await asyncio.to_thread(processar_conversao_adobe, resp.content, pdf_services)
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "Omnicheck Backend Local está ativo"}
+    return {"status": "ok", "message": "Omnicheck Backend Adobe está ativo"}
 
 @app.post("/gerar-pdf-adobe")
 @app.post("/gerar-pdf-adobe/")
@@ -76,17 +88,23 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not payload.urls:
         raise HTTPException(status_code=400, detail="A lista de URLs não pode estar vazia.")
 
-    semaphore = asyncio.Semaphore(10)
+    try:
+        pdf_services = obter_pdf_services()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro de credenciais Adobe: {str(e)}")
+
+    # Semáforo reduzido para evitar estourar o limite de conexões simultâneas da Adobe
+    semaphore = asyncio.Semaphore(3)
 
     async def processar_com_semaforo(url: str, client: httpx.AsyncClient):
         async with semaphore:
             try:
-                return await converter_url_local(url, client)
+                return await converter_url_adobe(url, pdf_services, client)
             except Exception as e:
-                print(f"[Aviso] Falha ao converter {url}: {str(e)}")
+                print(f"[Aviso] Falha ao converter {url} via Adobe: {str(e)}")
                 return None
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
         tasks = [processar_com_semaforo(url, client) for url in payload.urls]
         resultados = await asyncio.gather(*tasks)
 
@@ -95,7 +113,7 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     if not pdf_buffers:
         raise HTTPException(
             status_code=500, 
-            detail="Não foi possível converter nenhuma das URLs em PDF."
+            detail="Não foi possível converter nenhuma das URLs em PDF via Adobe."
         )
 
     writer = PdfWriter()
@@ -111,5 +129,5 @@ async def gerar_pdf_adobe(payload: PDFRequest):
     return StreamingResponse(
         output_stream,
         media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=Boletins_Mailchimp.pdf"}
+        headers={"Content-Disposition": "attachment; filename=Boletins_Mailchimp_Adobe.pdf"}
     )
