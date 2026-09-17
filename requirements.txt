@@ -3,5 +3,5 @@ uvicorn
 requests
 httpx
 pypdf
-adobe-pdfservices-sdk==4.3.0
+pdfservices-sdk
 pydantic
